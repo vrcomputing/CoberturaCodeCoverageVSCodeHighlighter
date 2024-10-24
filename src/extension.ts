@@ -7,8 +7,18 @@ export function activate(context: vscode.ExtensionContext) {
     // initial decorations
     let activeEditor = vscode.window.activeTextEditor;
     if (activeEditor) {
-        triggerUpdateDecorations(activeEditor.document.uri);
+        // TODO
     }
+
+    // settings
+
+    let decorationTypeH = vscode.window.createTextEditorDecorationType({
+        backgroundColor: vscode.workspace.getConfiguration('myExtension').get<string>('hitColor')
+    });
+
+    let decorationTypeM = vscode.window.createTextEditorDecorationType({
+        backgroundColor: vscode.workspace.getConfiguration('myExtension').get<string>('missColor')
+    });
 
     function hitsAndMissesForFiles(source: vscode.Uri, cobertura: vscode.Uri): Promise<[number[], number[]]> {
         return new Promise((resolve) => {
@@ -39,108 +49,86 @@ export function activate(context: vscode.ExtensionContext) {
         });
     }
 
-    context.subscriptions.push(vscode.commands.registerCommand('coberturahighlighter.showCoverage', function () {
-        const filename = vscode.window.activeTextEditor?.document.uri;
-        if (!filename) { return; };
-
+    function showDecorationsAll(editors: readonly vscode.TextEditor[] = vscode.window.visibleTextEditors) {
         vscode.workspace.findFiles('**/*.cobertura').then(options => {
-            vscode.window.showQuickPick(options.map(uri => uri.fsPath),).then(option => {
+            vscode.window.showQuickPick(options.map(uri => uri.fsPath)).then(option => {
                 if (option && option.length !== 0) {
-                    triggerUpdateDecorations(filename, vscode.Uri.file(option));
+                    showDecorations(vscode.Uri.file(option), editors);
                 }
             });
         });
+    }
+
+    // commands
+
+    context.subscriptions.push(vscode.commands.registerCommand('coberturahighlighter.showCoverageAll', function () {
+        showDecorationsAll();
+    }));
+
+    context.subscriptions.push(vscode.commands.registerCommand('coberturahighlighter.showCoverage', function () {
+        showDecorationsAll(activeEditor ? [activeEditor] : []);
+    }));
+
+    context.subscriptions.push(vscode.commands.registerCommand('coberturahighlighter.hideCoverageAll', function () {
+        hideDecorations();
+    }));
+
+    context.subscriptions.push(vscode.commands.registerCommand('coberturahighlighter.hideCoverage', function () {
+        hideDecorations(activeEditor ? [activeEditor] : []);
     }));
 
     vscode.window.onDidChangeActiveTextEditor(editor => {
         activeEditor = editor;
         if (editor) {
-            triggerUpdateDecorations(editor.document.uri);
+            // TODO
         }
     }, null, context.subscriptions);
 
     vscode.workspace.onDidChangeTextDocument(event => {
         if (activeEditor && event.document === activeEditor.document) {
-            triggerUpdateDecorations(activeEditor.document.uri);
+            hideDecorations(activeEditor ? [activeEditor] : []);
         }
     }, null, context.subscriptions);
 
-    // TODO how to use absolute directory
-    let watcher = vscode.workspace.createFileSystemWatcher(`**/*.xml`);
-    watcher.onDidChange(uri => {
-        triggerFileSystemChange(uri);
-    });
-    watcher.onDidCreate(uri => {
-        triggerFileSystemChange(uri);
-    });
-    watcher.onDidDelete(uri => {
-        triggerFileSystemChange(uri, true);
-    });
+    function decorationsForHitsAndMisses([hits, misses]: [number[], number[]]) {
+        const createDecorations = (lines: number[]) => {
+            return lines.flatMap(line => {
+                const startPos = new vscode.Position(line, 0);
+                const textLine = activeEditor?.document.lineAt(line);
+                if (!textLine) { return []; }
+                const endPos = new vscode.Position(line, textLine.text.length);
+                return { range: new vscode.Range(startPos, endPos) };
+            });
+        };
 
-    context.subscriptions.push(watcher);
+        const decorationsH = createDecorations(hits);
+        const decorationsM = createDecorations(misses);
 
-    // report->(source,content)
-    const coverageReports = new Map<string, Map<string, string>>();
-
-    function triggerFileSystemChange(uri: vscode.Uri, remove: boolean = false) {
-        if (remove) {
-            coverageReports.delete(uri.fsPath);
-        } else {
-            try {
-                const fileContent = fs.readFileSync(uri.fsPath, 'utf-8');
-                if (!coverageReports.has(uri.fsPath)) {
-                    coverageReports.set(uri.fsPath, new Map<string, string>());
-                }
-
-                const nestedMap = coverageReports.get(uri.fsPath)!;
-                nestedMap.set('content', fileContent);
-            } catch (error) {
-                console.error(`Error reading file ${uri.fsPath}:`, error);
-            }
-        }
+        return [decorationsH, decorationsM];
     }
 
-    function triggerUpdateDecorations(filename: vscode.Uri, cobertura?: vscode.Uri) {
-        if (!activeEditor || activeEditor.document.languageId !== 'cpp' || activeEditor.document.uri !== filename) {
-            return;
-        }
+    function languages(): string[] {
+        return ['cpp', 'c'];
+    }
 
-        if (!cobertura) { return; }
+    function showDecorations(report: vscode.Uri, editors: readonly vscode.TextEditor[] = vscode.window.visibleTextEditors) {
+        editors.forEach(editor => {
+            if (languages().includes(editor.document.languageId)) {
+                hitsAndMissesForFiles(editor.document.uri, report).then(([hits, misses]) => {
+                    const [decorationsH, decorationsM] = decorationsForHitsAndMisses([hits, misses]);
+                    editor.setDecorations(decorationTypeH, decorationsH);
+                    editor.setDecorations(decorationTypeM, decorationsM);
+                });
+            }
+        });
+    }
 
-        hitsAndMissesForFiles(filename, cobertura).then(([hits, misses]) => {
-            const decorationsH: vscode.DecorationOptions[] = [];
-            const decorationsM: vscode.DecorationOptions[] = [];
-
-            hits.forEach(line => {
-                const startPos = new vscode.Position(line, 0);
-                const textLine = activeEditor?.document.lineAt(line);
-                if (textLine) {
-                    const endPos = new vscode.Position(line, textLine.text.length);
-                    const decoration = { range: new vscode.Range(startPos, endPos) };
-                    decorationsH.push(decoration);
-                }
-            });
-
-            misses.forEach(line => {
-                const startPos = new vscode.Position(line, 0);
-                const textLine = activeEditor?.document.lineAt(line);
-                if (textLine) {
-                    const endPos = new vscode.Position(line, textLine.text.length);
-                    const decoration = { range: new vscode.Range(startPos, endPos) };
-                    decorationsM.push(decoration);
-                }
-            });
-
-            let decorationTypeH = vscode.window.createTextEditorDecorationType({
-                backgroundColor: vscode.workspace.getConfiguration('myExtension').get<string>('hitColor')
-            });
-
-            let decorationTypeM = vscode.window.createTextEditorDecorationType({
-                backgroundColor: vscode.workspace.getConfiguration('myExtension').get<string>('missColor')
-            });
-
-            activeEditor?.setDecorations(decorationTypeH, decorationsH);
-            activeEditor?.setDecorations(decorationTypeM, decorationsM);
+    function hideDecorations(editors: readonly vscode.TextEditor[] = vscode.window.visibleTextEditors) {
+        editors.forEach(editor => {
+            if (languages().includes(editor.document.languageId)) {
+                editor.setDecorations(decorationTypeH, []);
+                editor.setDecorations(decorationTypeM, []);
+            }
         });
     }
 }

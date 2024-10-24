@@ -36,6 +36,18 @@
       {
         "command": "coberturahighlighter.showCoverage",
         "title": "Show Coverage"
+      },
+      {
+        "command": "coberturahighlighter.showCoverageAll",
+        "title": "Show Coverage for all open files"
+      },
+      {
+        "command": "coberturahighlighter.hideCoverage",
+        "title": "Hide Coverage"
+      },
+      {
+        "command": "coberturahighlighter.hideCoverageAll",
+        "title": "Hide Coverage for all open files"
       }
     ]
   },
