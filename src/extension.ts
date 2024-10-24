@@ -20,6 +20,19 @@ export function activate(context: vscode.ExtensionContext) {
         backgroundColor: vscode.workspace.getConfiguration('myExtension').get<string>('missColor')
     });
 
+    function filesInReport(report: vscode.Uri): Promise<vscode.Uri[]> {
+        return new Promise((resolve) => {
+            const xmlData = fs.readFileSync(report.fsPath, 'utf-8');
+            const doc = new DOMParser().parseFromString(xmlData, 'text/xml');
+            const sources = xpath.select(`coverage/sources/source/text()`, doc);
+            const drives: string[] = sources.map(drive => drive.toString().replace(/.*"(.*)".*/, '$1'));
+            const filenames = xpath.select(`coverage/packages/package/classes/class/@filename`, doc);
+            const files: string[] = filenames.map(filename => filename.toString().replace(/.*"(.*)".*/, '$1'));
+            const allFiles = drives.flatMap(el1 => files.map(el2 => vscode.Uri.file([el1.toString(), el2.toString()].join('/'))));
+            resolve(allFiles);
+        });
+    }
+
     function hitsAndMissesForFiles(source: vscode.Uri, cobertura: vscode.Uri): Promise<[number[], number[]]> {
         return new Promise((resolve) => {
             const xmlData = fs.readFileSync(cobertura.fsPath, 'utf-8');
@@ -75,6 +88,24 @@ export function activate(context: vscode.ExtensionContext) {
 
     context.subscriptions.push(vscode.commands.registerCommand('coberturahighlighter.hideCoverage', function () {
         hideDecorations(activeEditor ? [activeEditor] : []);
+    }));
+
+    context.subscriptions.push(vscode.commands.registerCommand('coberturahighlighter.showCoverageForReport', function () {
+        vscode.workspace.findFiles('**/*.cobertura').then(options => {
+            vscode.window.showQuickPick(options.map(uri => uri.fsPath)).then(option => {
+                if (option && option.length !== 0) {
+                    filesInReport(vscode.Uri.file(option)).then(files => {
+                        files.forEach(file => {
+                            vscode.workspace.openTextDocument(file).then((document) => {
+                                vscode.window.showTextDocument(document, { viewColumn: vscode.ViewColumn.Active, preview: false }).then(editor => {
+                                    showDecorations(vscode.Uri.file(option), [editor]);
+                                });
+                            });
+                        });
+                    });
+                }
+            });
+        });
     }));
 
     vscode.window.onDidChangeActiveTextEditor(editor => {

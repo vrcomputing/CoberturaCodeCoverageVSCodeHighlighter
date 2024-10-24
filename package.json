@@ -48,6 +48,10 @@
       {
         "command": "coberturahighlighter.hideCoverageAll",
         "title": "Hide Coverage for all open files"
+      },
+      {
+        "command": "coberturahighlighter.showCoverageForReport",
+        "title": "Show Coverage for all files in the report"
       }
     ]
   },
