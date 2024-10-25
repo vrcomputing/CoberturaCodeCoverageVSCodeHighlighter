@@ -18,17 +18,22 @@
       "type": "object",
       "title": "My Extension Settings",
       "properties": {
-        "myExtension.hitColor": {
+        "coberturahighlighter.hitColor": {
           "type": "string",
-          "default": "#70e000",
+          "default": "#4CAF5080",
           "description": "Color for covered rows",
           "format": "color"
         },
-        "myExtension.missColor": {
+        "coberturahighlighter.missColor": {
           "type": "string",
-          "default": "#9d0208",
+          "default": "#F4433680",
           "description": "Color for uncovered rows",
           "format": "color"
+        },
+        "coberturahighlighter.reportPattern": {
+          "type": "string",
+          "default": "*.cobertura",
+          "description": "Glob pattern for cobertura report filenames"
         }
       }
     },

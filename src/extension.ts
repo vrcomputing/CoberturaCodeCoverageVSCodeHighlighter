@@ -2,6 +2,7 @@ import * as vscode from 'vscode';
 import * as fs from 'fs';
 import * as xpath from 'xpath';
 import { DOMParser } from 'xmldom';
+import * as packageJson from '../package.json';
 
 export function activate(context: vscode.ExtensionContext) {
     // initial decorations
@@ -11,14 +12,15 @@ export function activate(context: vscode.ExtensionContext) {
     }
 
     // settings
-
     let decorationTypeH = vscode.window.createTextEditorDecorationType({
-        backgroundColor: vscode.workspace.getConfiguration('myExtension').get<string>('hitColor')
+        backgroundColor: vscode.workspace.getConfiguration(packageJson.name).get<string>('hitColor')
     });
 
     let decorationTypeM = vscode.window.createTextEditorDecorationType({
-        backgroundColor: vscode.workspace.getConfiguration('myExtension').get<string>('missColor')
+        backgroundColor: vscode.workspace.getConfiguration(packageJson.name).get<string>('missColor')
     });
+
+    const reportPattern = vscode.workspace.getConfiguration(packageJson.name).get<string>('reportPattern');
 
     function filesInReport(report: vscode.Uri): Promise<vscode.Uri[]> {
         return new Promise((resolve) => {
@@ -63,7 +65,7 @@ export function activate(context: vscode.ExtensionContext) {
     }
 
     function showDecorationsAll(editors: readonly vscode.TextEditor[] = vscode.window.visibleTextEditors) {
-        vscode.workspace.findFiles('**/*.cobertura').then(options => {
+        vscode.workspace.findFiles(`**/${reportPattern}`).then(options => {
             vscode.window.showQuickPick(options.map(uri => uri.fsPath)).then(option => {
                 if (option && option.length !== 0) {
                     showDecorations(vscode.Uri.file(option), editors);
@@ -91,7 +93,7 @@ export function activate(context: vscode.ExtensionContext) {
     }));
 
     context.subscriptions.push(vscode.commands.registerCommand('coberturahighlighter.showCoverageForReport', function () {
-        vscode.workspace.findFiles('**/*.cobertura').then(options => {
+        vscode.workspace.findFiles(`**/${reportPattern}`).then(options => {
             vscode.window.showQuickPick(options.map(uri => uri.fsPath)).then(option => {
                 if (option && option.length !== 0) {
                     filesInReport(vscode.Uri.file(option)).then(files => {
