@@ -64,13 +64,21 @@ export function activate(context: vscode.ExtensionContext) {
         });
     }
 
-    function showDecorationsAll(editors: readonly vscode.TextEditor[] = vscode.window.visibleTextEditors) {
-        vscode.workspace.findFiles(`**/${reportPattern}`).then(options => {
-            vscode.window.showQuickPick(options.map(uri => uri.fsPath)).then(option => {
-                if (option && option.length !== 0) {
-                    showDecorations(vscode.Uri.file(option), editors);
-                }
+    function selectReport(): Promise<vscode.Uri> {
+        return new Promise((resolve) => {
+            vscode.workspace.findFiles(`**/${reportPattern}`).then(options => {
+                vscode.window.showQuickPick(options.map(uri => uri.fsPath)).then(option => {
+                    if (option && option.length !== 0) {
+                        resolve(vscode.Uri.file(option));
+                    }
+                });
             });
+        });
+    }
+
+    function showDecorationsAll(editors: readonly vscode.TextEditor[] = vscode.window.visibleTextEditors) {
+        selectReport().then(uri => {
+            showDecorations(uri, editors);
         });
     }
 
