@@ -22,6 +22,64 @@ export function activate(context: vscode.ExtensionContext) {
 
     const reportPattern = vscode.workspace.getConfiguration(packageJson.name).get<string>('reportPattern');
 
+    const diagnosticCollection = vscode.languages.createDiagnosticCollection('codeCoverage');
+    context.subscriptions.push(diagnosticCollection);
+
+    const statusBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
+    statusBar.text = '';
+    context.subscriptions.push(statusBar);
+
+    function updateDiagnostics(document: vscode.TextDocument, [hits, misses]: [number[], number[]]) {
+        if (!languages().includes(document.languageId)) {
+            return;
+        }
+
+        // update status bar
+        const coveragePercentageMin = 80;
+        const coveragePercentage = (hits.length / (hits.length + misses.length)) * 100;
+        const coverageInfo = `Coverage: ${coveragePercentage.toFixed(2)}%`;
+        const coverageIcon = coveragePercentage >= coveragePercentageMin ? '$(check)' : '$(warning)';
+        statusBar.text = `${coverageIcon} ${coverageInfo}`;
+        statusBar.color = coveragePercentage >= coveragePercentageMin ? '#4CAF50' : '#fcba04';
+        statusBar.show();
+
+        const diagnostics: vscode.Diagnostic[] = [];
+        const diagnosticSource = 'Code Coverage';
+
+        if (misses.length > 0) {
+            const diagnostic = new vscode.Diagnostic(
+                new vscode.Range(
+                    document.positionAt(0),
+                    document.positionAt(0)
+                ),
+                `File is not covered sufficiently (${coveragePercentage.toFixed(2)}/${coveragePercentageMin.toFixed(2)}%):`,
+                vscode.DiagnosticSeverity.Warning
+            );
+            diagnostic.source = diagnosticSource;
+            diagnostics.push(diagnostic);
+        }
+
+        // Loop through missed lines and create diagnostics
+        misses.forEach(lineNumber => {
+            const range = new vscode.Range(
+                new vscode.Position(lineNumber, 0),
+                new vscode.Position(lineNumber, document.lineAt(lineNumber).text.length)
+            );
+
+            const diagnostic = new vscode.Diagnostic(
+                range,
+                `Line ${lineNumber + 1} is not covered by tests.`,
+                vscode.DiagnosticSeverity.Warning
+            );
+
+            diagnostic.source = diagnosticSource;
+            diagnostics.push(diagnostic);
+        });
+
+        // Set diagnostics for the current document
+        diagnosticCollection.set(document.uri, diagnostics);
+    }
+
     function filesInReport(report: vscode.Uri): Promise<vscode.Uri[]> {
         return new Promise((resolve) => {
             const xmlData = fs.readFileSync(report.fsPath, 'utf-8');
@@ -131,6 +189,13 @@ export function activate(context: vscode.ExtensionContext) {
         }
     }, null, context.subscriptions);
 
+    // Clear diagnostics when a file is closed
+    vscode.workspace.onDidCloseTextDocument(
+        (document) => diagnosticCollection.delete(document.uri),
+        null,
+        context.subscriptions
+    );
+
     function decorationsForHitsAndMisses([hits, misses]: [number[], number[]]) {
         const createDecorations = (lines: number[]) => {
             return lines.flatMap(line => {
@@ -159,6 +224,7 @@ export function activate(context: vscode.ExtensionContext) {
                     const [decorationsH, decorationsM] = decorationsForHitsAndMisses([hits, misses]);
                     editor.setDecorations(decorationTypeH, decorationsH);
                     editor.setDecorations(decorationTypeM, decorationsM);
+                    updateDiagnostics(editor.document, [hits, misses]);
                 });
             }
         });
