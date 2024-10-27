@@ -140,6 +140,22 @@ namespace cobertura {
     }
 }
 
+namespace filesystem {
+    export function createFileSystemWatcher(globPattern: vscode.GlobPattern, onDidChange?: (uri: vscode.Uri) => any, onDidCreate?: (uri: vscode.Uri) => any, onDidDelete?: (uri: vscode.Uri) => any): vscode.FileSystemWatcher {
+        const watcher = vscode.workspace.createFileSystemWatcher(globPattern);
+        if (onDidChange) {
+            watcher.onDidChange(onDidChange);
+        }
+        if (onDidCreate) {
+            watcher.onDidChange(onDidCreate);
+        }
+        if (onDidDelete) {
+            watcher.onDidChange(onDidDelete);
+        }
+        return watcher;
+    }
+}
+
 export function activate(context: vscode.ExtensionContext) {
     // initial decorations
     let activeEditor = vscode.window.activeTextEditor;
@@ -148,7 +164,7 @@ export function activate(context: vscode.ExtensionContext) {
     }
 
     // report->filenames
-    let activeCoverage: [vscode.Uri, cobertura.Coverage];
+    let activeCoverage: [vscode.Uri, cobertura.Coverage] | undefined;
 
     // settings
     let decorationTypeH = vscode.window.createTextEditorDecorationType({
@@ -160,6 +176,13 @@ export function activate(context: vscode.ExtensionContext) {
     });
 
     const reportPattern = vscode.workspace.getConfiguration(packageJson.name).get<string>('reportPattern');
+    context.subscriptions.push(filesystem.createFileSystemWatcher(`**/${reportPattern}`, uri => {
+        if (activeCoverage && uri.fsPath === activeCoverage[0].fsPath) {
+            hideDecorations(vscode.window.visibleTextEditors);
+            initializeCoverage(uri);
+            showDecorations(vscode.window.visibleTextEditors);
+        }
+    }));
 
     const diagnosticCollection = vscode.languages.createDiagnosticCollection('codeCoverage');
     context.subscriptions.push(diagnosticCollection);
@@ -215,7 +238,7 @@ export function activate(context: vscode.ExtensionContext) {
 
     vscode.window.onDidChangeActiveTextEditor(editor => {
         activeEditor = editor;
-        if (editor) {
+        if (editor && activeCoverage) {
             const observable = cobertura.observableFilesInCoverage(activeCoverage[1]).map(uri => uri.fsPath);
             const fsPath = editor.document.uri.fsPath;
             if (observable.includes(fsPath)) {
@@ -346,6 +369,9 @@ export function activate(context: vscode.ExtensionContext) {
 
     function showDecorations(editors: readonly vscode.TextEditor[] = vscode.window.visibleTextEditors) {
         editors.forEach(editor => {
+            if (!activeCoverage) {
+                return;
+            }
             const filename = editor.document.uri.fsPath;
             const classes = activeCoverage[1].packages.map(pkg => pkg.classes).flat().filter(cls => filename.endsWith(cls.filename));
             const hits = classes.map(cls => cls.getHits()).flat();
