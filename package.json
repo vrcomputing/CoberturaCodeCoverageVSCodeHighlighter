@@ -34,6 +34,11 @@
           "type": "string",
           "default": "*.cobertura",
           "description": "Glob pattern for cobertura report filenames"
+        },
+        "coberturahighlighter.minCoverage": {
+          "type": "integer",
+          "default": "80",
+          "description": "Minimum line coverage in percent"
         }
       }
     },

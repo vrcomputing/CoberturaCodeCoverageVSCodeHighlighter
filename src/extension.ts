@@ -3,6 +3,7 @@ import * as fs from 'fs';
 import * as xpath from 'xpath';
 import { DOMParser } from 'xmldom';
 import * as packageJson from '../package.json';
+import { assert } from 'console';
 
 export function activate(context: vscode.ExtensionContext) {
     // initial decorations
@@ -29,54 +30,54 @@ export function activate(context: vscode.ExtensionContext) {
     statusBar.text = '';
     context.subscriptions.push(statusBar);
 
+    function coverageInPercent([hits, misses]: [number[], number[]]): number {
+        const coveragePercentage = (hits.length / (hits.length + misses.length)) * 100;
+        return coveragePercentage;
+    }
+
+    function minimumCoverage(): number {
+        const minCoverage = vscode.workspace.getConfiguration(packageJson.name).get<string>('minCoverage');
+        return minCoverage ? parseFloat(minCoverage) : 80.0;
+    }
+
+    function coverageForDisplay(coverage: number): string {
+        assert(coverage >= 0 && coverage <= 100);
+        return `${coverage.toFixed(2)}`;
+    }
+
+    function updateStatusBar([hits, misses]: [number[], number[]]) {
+        const coveragePercentageMin = minimumCoverage();
+        const coveragePercentage = coverageInPercent([hits, misses]);
+        const coverageInfo = `Coverage: ${coverageForDisplay(coveragePercentage)}%`;
+        const coverageIcon = coveragePercentage >= coveragePercentageMin ? '$(check)' : '$(warning)';
+        statusBar.text = `${coverageIcon} ${coverageInfo}`;
+        statusBar.show();
+    }
+
     function updateDiagnostics(document: vscode.TextDocument, [hits, misses]: [number[], number[]]) {
         if (!languages().includes(document.languageId)) {
             return;
         }
 
-        // update status bar
-        const coveragePercentageMin = 80;
-        const coveragePercentage = (hits.length / (hits.length + misses.length)) * 100;
-        const coverageInfo = `Coverage: ${coveragePercentage.toFixed(2)}%`;
-        const coverageIcon = coveragePercentage >= coveragePercentageMin ? '$(check)' : '$(warning)';
-        statusBar.text = `${coverageIcon} ${coverageInfo}`;
-        statusBar.color = coveragePercentage >= coveragePercentageMin ? '#4CAF50' : '#fcba04';
-        statusBar.show();
+        const coveragePercentageMin = minimumCoverage();
+        const coveragePercentage = coverageInPercent([hits, misses]);
 
         const diagnostics: vscode.Diagnostic[] = [];
         const diagnosticSource = 'Code Coverage';
 
-        if (misses.length > 0) {
+        if (coveragePercentage < coveragePercentageMin) {
             const diagnostic = new vscode.Diagnostic(
                 new vscode.Range(
                     document.positionAt(0),
                     document.positionAt(0)
                 ),
-                `File is not covered sufficiently (${coveragePercentage.toFixed(2)}/${coveragePercentageMin.toFixed(2)}%):`,
+                `File is not covered sufficiently (${coverageForDisplay(coveragePercentage)}/${coverageForDisplay(coveragePercentageMin)}%):`,
                 vscode.DiagnosticSeverity.Warning
             );
             diagnostic.source = diagnosticSource;
             diagnostics.push(diagnostic);
         }
 
-        // Loop through missed lines and create diagnostics
-        misses.forEach(lineNumber => {
-            const range = new vscode.Range(
-                new vscode.Position(lineNumber, 0),
-                new vscode.Position(lineNumber, document.lineAt(lineNumber).text.length)
-            );
-
-            const diagnostic = new vscode.Diagnostic(
-                range,
-                `Line ${lineNumber + 1} is not covered by tests.`,
-                vscode.DiagnosticSeverity.Warning
-            );
-
-            diagnostic.source = diagnosticSource;
-            diagnostics.push(diagnostic);
-        });
-
-        // Set diagnostics for the current document
         diagnosticCollection.set(document.uri, diagnostics);
     }
 
@@ -225,6 +226,9 @@ export function activate(context: vscode.ExtensionContext) {
                     editor.setDecorations(decorationTypeH, decorationsH);
                     editor.setDecorations(decorationTypeM, decorationsM);
                     updateDiagnostics(editor.document, [hits, misses]);
+                    if (activeEditor === editor) {
+                        updateStatusBar([hits, misses]);
+                    }
                 });
             }
         });
