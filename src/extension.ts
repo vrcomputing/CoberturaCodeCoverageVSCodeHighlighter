@@ -25,12 +25,130 @@ namespace xml {
     }
 }
 
+namespace cobertura {
+    class Line {
+        public number: number;
+        public hits: number;
+        constructor(number: number, hits: number) {
+            this.number = number;
+            this.hits = hits;
+        }
+    }
+
+    class Class {
+        public name: string;
+        public filename: string;
+        public lines: Line[];
+
+        constructor(name: string, filename: string, lines: Line[]) {
+            this.name = name;
+            this.filename = filename;
+            this.lines = lines;
+        }
+
+        public getHits(): number[] {
+            return this.lines
+                .filter(line => line.hits > 0)
+                .map(line => line.number);
+        }
+
+        public getMisses(): number[] {
+            return this.lines
+                .filter(line => line.hits <= 0)
+                .map(line => line.number);
+        }
+    }
+
+    class Source {
+        public text: string;
+        constructor(text: string) {
+            this.text = text;
+        }
+    }
+
+    class Package {
+        public name: string;
+        public classes: Class[];
+        constructor(name: string, classes: Class[]) {
+            this.name = name;
+            this.classes = classes;
+        }
+    }
+
+    export class Coverage {
+        public sources: Source[];
+        public packages: Package[];
+
+        constructor(sources: Source[], packages: Package[]) {
+            this.sources = sources;
+            this.packages = packages;
+        }
+    }
+
+    export function observableFilesInCoverage(coverage: Coverage): vscode.Uri[] {
+        const drives = coverage.sources.map(source => source.text);
+        const filenames = coverage.packages.map(pack => pack.classes).flat().map(cls => cls.filename);
+        const files = drives.flatMap(drive => filenames.map(filename => vscode.Uri.file([drive.toString(), filename.toString()].join('/'))));
+        return files;
+    }
+
+    function linesInClass(doc: Document, packageName: string, classFilename: string): Line[] {
+        const nodes = xpath.select(`coverage/packages/package[@name = '${packageName}']/classes/class[@filename = '${classFilename}']/lines/line`, doc);
+        const lines = nodes.map(node => {
+            const attributes = xml.attributes(node, ['number', 'hits']);
+            return new Line(parseInt(attributes['number']), parseInt(attributes['hits']));
+        });
+        return lines;
+    }
+
+    function classesInPackage(doc: Document, packageName: string): Class[] {
+        const nodes = xpath.select(`coverage/packages/package[@name = '${packageName}']/classes/class`, doc);
+        const classes = nodes.map(node => {
+            const attributes = xml.attributes(node, ['name', 'filename']);
+            const lines = linesInClass(doc, packageName, attributes['filename']);
+            return new Class(attributes['name'], attributes['filename'], lines);
+        });
+        return classes;
+    }
+
+    function packagesInDocument(doc: Document): Package[] {
+        const nodes = xpath.select(`coverage/packages/package`, doc);
+        const packages = nodes.map(node => {
+            const name = xml.attribute(node, 'name');
+            const classes = classesInPackage(doc, name);
+            return new Package(name, classes);
+        });
+        return packages;
+    }
+
+    function sourcesInDocument(doc: Document): Source[] {
+        const nodes = xpath.select(`coverage/sources/source/text()`, doc);
+        const sources = nodes.map(node => new Source(node.toString()));
+        return sources;
+    }
+
+    function coverageFromDocument(doc: Document): Coverage {
+        const sources = sourcesInDocument(doc);
+        const packages = packagesInDocument(doc);
+        return new Coverage(sources, packages);
+    }
+
+    export function coverageFromFile(uri: vscode.Uri): Coverage {
+        const xmlData = fs.readFileSync(uri.fsPath, 'utf-8');
+        const doc = new DOMParser().parseFromString(xmlData, 'text/xml');
+        return coverageFromDocument(doc);
+    }
+}
+
 export function activate(context: vscode.ExtensionContext) {
     // initial decorations
     let activeEditor = vscode.window.activeTextEditor;
     if (activeEditor) {
         // TODO
     }
+
+    // report->filenames
+    let activeCoverage: [vscode.Uri, cobertura.Coverage];
 
     // settings
     let decorationTypeH = vscode.window.createTextEditorDecorationType({
@@ -65,13 +183,110 @@ export function activate(context: vscode.ExtensionContext) {
         return `${coverage.toFixed(2)}`;
     }
 
+    function selectReport(): Promise<vscode.Uri> {
+        return new Promise((resolve) => {
+            vscode.workspace.findFiles(`**/${reportPattern}`).then(options => {
+                vscode.window.showQuickPick(options.map(uri => uri.fsPath)).then(option => {
+                    if (option && option.length !== 0) {
+                        resolve(vscode.Uri.file(option));
+                    }
+                });
+            });
+        });
+    }
+
+    function initializeCoverage(uri: vscode.Uri) {
+        const coverage = cobertura.coverageFromFile(uri);
+        activeCoverage = [uri, coverage];
+    }
+
+    // commands
+    context.subscriptions.push(vscode.commands.registerCommand('coberturahighlighter.selectReport', function () {
+        selectReport().then(uri => initializeCoverage(uri)).then(_ => showDecorations(activeEditor ? [activeEditor] : []));
+    }));
+
+    context.subscriptions.push(vscode.commands.registerCommand('coberturahighlighter.showCoverage', function () {
+        showDecorations(activeEditor ? [activeEditor] : []);
+    }));
+
+    context.subscriptions.push(vscode.commands.registerCommand('coberturahighlighter.hideCoverage', function () {
+        hideDecorations(activeEditor ? [activeEditor] : []);
+    }));
+
+    vscode.window.onDidChangeActiveTextEditor(editor => {
+        activeEditor = editor;
+        if (editor) {
+            const observable = cobertura.observableFilesInCoverage(activeCoverage[1]).map(uri => uri.fsPath);
+            const fsPath = editor.document.uri.fsPath;
+            if (observable.includes(fsPath)) {
+                showDecorations([editor]);
+            }
+            else {
+                hideDecorations([editor]);
+            }
+        }
+    }, null, context.subscriptions);
+
+    vscode.workspace.onDidChangeTextDocument(event => {
+        if (activeEditor && event.document === activeEditor.document) {
+            hideDecorations(activeEditor ? [activeEditor] : []);
+        }
+    }, null, context.subscriptions);
+
+    // Clear diagnostics when a file is closed
+    vscode.workspace.onDidCloseTextDocument(
+        (document) => diagnosticCollection.delete(document.uri),
+        null,
+        context.subscriptions
+    );
+
+    function rangesForLines(doc: vscode.TextDocument, lines: number[]): vscode.Range[] {
+        if (!doc) {
+            return [];
+        }
+        const ranges = lines
+            .map(line => line - 1) // cobertura lines : [1, document.lineCount]
+            .filter(line => line >= 0 && line < doc.lineCount) // vscode lines : [0, document.lineCount)
+            .map(line => {
+                const startPos = new vscode.Position(line, 0);
+                const textLine = doc.lineAt(line);
+                const endPos = new vscode.Position(line, textLine.text.length);
+                return new vscode.Range(startPos, endPos);
+            });
+
+        return ranges;
+    }
+
+    function rangesForHitsAndMisses(doc: vscode.TextDocument, [hits, misses]: [number[], number[]]) {
+        const decorationsH = rangesForLines(doc, hits);
+        const decorationsM = rangesForLines(doc, misses);
+        return [decorationsH, decorationsM];
+    }
+
+    function languages(): string[] {
+        return ['cpp', 'c'];
+    }
+
     function updateStatusBar([hits, misses]: [number[], number[]]) {
-        const coveragePercentageMin = minimumCoverage();
-        const coveragePercentage = coverageInPercent([hits, misses]);
-        const coverageInfo = `Coverage: ${coverageForDisplay(coveragePercentage)}%`;
-        const coverageIcon = coveragePercentage >= coveragePercentageMin ? '$(check)' : '$(warning)';
-        statusBar.text = `${coverageIcon} ${coverageInfo}`;
-        statusBar.show();
+        if (!hits || !hits.length || !misses || !misses.length) {
+            statusBar.hide();
+        }
+        else {
+            const coveragePercentageMin = minimumCoverage();
+            const coveragePercentage = coverageInPercent([hits, misses]);
+            const coverageInfo = `Coverage: ${coverageForDisplay(coveragePercentage)}%`;
+            const coverageIcon = coveragePercentage >= coveragePercentageMin ? '$(check)' : '$(warning)';
+            statusBar.text = `${coverageIcon} ${coverageInfo}`;
+            statusBar.show();
+        }
+    }
+
+    function showStatusBar([hits, misses]: [number[], number[]]) {
+        updateStatusBar([hits, misses]);
+    }
+
+    function hideStatusBar() {
+        updateStatusBar([[], []]);
     }
 
     function updateDiagnostics(document: vscode.TextDocument, [hits, misses]: [number[], number[]]) {
@@ -101,163 +316,54 @@ export function activate(context: vscode.ExtensionContext) {
         diagnosticCollection.set(document.uri, diagnostics);
     }
 
-    function filesInReport(report: vscode.Uri): Promise<vscode.Uri[]> {
-        return new Promise((resolve) => {
-            const xmlData = fs.readFileSync(report.fsPath, 'utf-8');
-            const doc = new DOMParser().parseFromString(xmlData, 'text/xml');
-            const sources = xpath.select(`coverage/sources/source/text()`, doc);
-            const drives: string[] = sources.map(drive => drive.toString());
-            const filenames = xpath.select(`coverage/packages/package/classes/class/@filename`, doc);
-            const files: string[] = filenames.map(filename => xml.attribute(filename, "filename"));
-            const allFiles = drives.flatMap(el1 => files.map(el2 => vscode.Uri.file([el1.toString(), el2.toString()].join('/'))));
-            resolve(allFiles);
-        });
+    function showDiagnostics(document: vscode.TextDocument, [hits, misses]: [number[], number[]]) {
+        updateDiagnostics(document, [hits, misses]);
     }
 
-    function hitsAndMissesForFiles(source: vscode.Uri, cobertura: vscode.Uri): Promise<[number[], number[]]> {
-        return new Promise((resolve) => {
-            const xmlData = fs.readFileSync(cobertura.fsPath, 'utf-8');
-            const doc = new DOMParser().parseFromString(xmlData, 'text/xml');
-            const file = source.fsPath.replace(/^[a-zA-Z]:\\/, '');
-            const query = `coverage/packages/package/classes/class[@filename = '${file}']/lines/line`;
-            const linesNodes = xpath.select(query, doc);
-
-            const hitsArray: number[] = [];
-            const missesArray: number[] = [];
-
-            linesNodes.forEach(node => {
-                const attributes = xml.attributes(node, ["number", "hits"]);
-                const number = parseInt(attributes['number']) - 1;
-                const hits = parseInt(attributes['hits']);
-                if (hits > 0) {
-                    hitsArray.push(number);
-                }
-                else {
-                    missesArray.push(number);
-                }
-            });
-
-            resolve([hitsArray, missesArray]);
-        });
+    function hideDiagnostics(document: vscode.TextDocument) {
+        updateDiagnostics(document, [[], []]);
     }
 
-    function selectReport(): Promise<vscode.Uri> {
-        return new Promise((resolve) => {
-            vscode.workspace.findFiles(`**/${reportPattern}`).then(options => {
-                vscode.window.showQuickPick(options.map(uri => uri.fsPath)).then(option => {
-                    if (option && option.length !== 0) {
-                        resolve(vscode.Uri.file(option));
-                    }
-                });
-            });
-        });
-    }
-
-    function showDecorationsAll(editors: readonly vscode.TextEditor[] = vscode.window.visibleTextEditors) {
-        selectReport().then(uri => {
-            showDecorations(uri, editors);
-        });
-    }
-
-    // commands
-
-    context.subscriptions.push(vscode.commands.registerCommand('coberturahighlighter.showCoverageAll', function () {
-        showDecorationsAll();
-    }));
-
-    context.subscriptions.push(vscode.commands.registerCommand('coberturahighlighter.showCoverage', function () {
-        showDecorationsAll(activeEditor ? [activeEditor] : []);
-    }));
-
-    context.subscriptions.push(vscode.commands.registerCommand('coberturahighlighter.hideCoverageAll', function () {
-        hideDecorations();
-    }));
-
-    context.subscriptions.push(vscode.commands.registerCommand('coberturahighlighter.hideCoverage', function () {
-        hideDecorations(activeEditor ? [activeEditor] : []);
-    }));
-
-    context.subscriptions.push(vscode.commands.registerCommand('coberturahighlighter.showCoverageForReport', function () {
-        vscode.workspace.findFiles(`**/${reportPattern}`).then(options => {
-            vscode.window.showQuickPick(options.map(uri => uri.fsPath)).then(option => {
-                if (option && option.length !== 0) {
-                    filesInReport(vscode.Uri.file(option)).then(files => {
-                        files.forEach(file => {
-                            vscode.workspace.openTextDocument(file).then((document) => {
-                                vscode.window.showTextDocument(document, { viewColumn: vscode.ViewColumn.Active, preview: false }).then(editor => {
-                                    showDecorations(vscode.Uri.file(option), [editor]);
-                                });
-                            });
-                        });
-                    });
-                }
-            });
-        });
-    }));
-
-    vscode.window.onDidChangeActiveTextEditor(editor => {
-        activeEditor = editor;
-        if (editor) {
-            // TODO
+    function updateLineHighlights(editor: vscode.TextEditor, [hits, misses]: [number[], number[]]) {
+        if (!hits || !hits.length || !misses || !misses.length) {
+            editor.setDecorations(decorationTypeH, []);
+            editor.setDecorations(decorationTypeM, []);
         }
-    }, null, context.subscriptions);
-
-    vscode.workspace.onDidChangeTextDocument(event => {
-        if (activeEditor && event.document === activeEditor.document) {
-            hideDecorations(activeEditor ? [activeEditor] : []);
+        else {
+            const [decorationsH, decorationsM] = rangesForHitsAndMisses(editor.document, [hits, misses]);
+            editor.setDecorations(decorationTypeH, decorationsH);
+            editor.setDecorations(decorationTypeM, decorationsM);
         }
-    }, null, context.subscriptions);
-
-    // Clear diagnostics when a file is closed
-    vscode.workspace.onDidCloseTextDocument(
-        (document) => diagnosticCollection.delete(document.uri),
-        null,
-        context.subscriptions
-    );
-
-    function decorationsForHitsAndMisses([hits, misses]: [number[], number[]]) {
-        const createDecorations = (lines: number[]) => {
-            return lines.flatMap(line => {
-                const startPos = new vscode.Position(line, 0);
-                const textLine = activeEditor?.document.lineAt(line);
-                if (!textLine) { return []; }
-                const endPos = new vscode.Position(line, textLine.text.length);
-                return { range: new vscode.Range(startPos, endPos) };
-            });
-        };
-
-        const decorationsH = createDecorations(hits);
-        const decorationsM = createDecorations(misses);
-
-        return [decorationsH, decorationsM];
     }
 
-    function languages(): string[] {
-        return ['cpp', 'c'];
+    function showLineHighlights(editor: vscode.TextEditor, [hits, misses]: [number[], number[]]) {
+        updateLineHighlights(editor, [hits, misses]);
     }
 
-    function showDecorations(report: vscode.Uri, editors: readonly vscode.TextEditor[] = vscode.window.visibleTextEditors) {
+    function hideLineHighlights(editor: vscode.TextEditor) {
+        updateLineHighlights(editor, [[], []]);
+    }
+
+    function showDecorations(editors: readonly vscode.TextEditor[] = vscode.window.visibleTextEditors) {
         editors.forEach(editor => {
-            if (languages().includes(editor.document.languageId)) {
-                hitsAndMissesForFiles(editor.document.uri, report).then(([hits, misses]) => {
-                    const [decorationsH, decorationsM] = decorationsForHitsAndMisses([hits, misses]);
-                    editor.setDecorations(decorationTypeH, decorationsH);
-                    editor.setDecorations(decorationTypeM, decorationsM);
-                    updateDiagnostics(editor.document, [hits, misses]);
-                    if (activeEditor === editor) {
-                        updateStatusBar([hits, misses]);
-                    }
-                });
+            const filename = editor.document.uri.fsPath;
+            const classes = activeCoverage[1].packages.map(pkg => pkg.classes).flat().filter(cls => filename.endsWith(cls.filename));
+            const hits = classes.map(cls => cls.getHits()).flat();
+            const misses = classes.map(cls => cls.getMisses()).flat();
+
+            showLineHighlights(editor, [hits, misses]);
+            showDiagnostics(editor.document, [hits, misses]);
+            if (editor === activeEditor) {
+                showStatusBar([hits, misses]);
             }
         });
     }
 
     function hideDecorations(editors: readonly vscode.TextEditor[] = vscode.window.visibleTextEditors) {
         editors.forEach(editor => {
-            if (languages().includes(editor.document.languageId)) {
-                editor.setDecorations(decorationTypeH, []);
-                editor.setDecorations(decorationTypeM, []);
-            }
+            hideLineHighlights(editor);
+            hideDiagnostics(editor.document);
+            hideStatusBar();
         });
     }
 }
