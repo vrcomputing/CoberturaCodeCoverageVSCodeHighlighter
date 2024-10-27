@@ -5,6 +5,26 @@ import { DOMParser } from 'xmldom';
 import * as packageJson from '../package.json';
 import { assert } from 'console';
 
+namespace xml {
+    export function attribute(node: xpath.SelectedValue | string, attributeName: string, defaultValue: string = ""): string {
+        const regex = new RegExp(`${attributeName}="([^"]*?)"`, 'i');
+        const match = node.toString().match(regex);
+        return match ? match[1] : defaultValue;
+    }
+
+    export function attributes(node: xpath.SelectedValue | string, attributeNames: string[], defaultValue: string = ""): Record<string, string> {
+        const result: Record<string, string> = {};
+
+        for (const attributeName of attributeNames) {
+            const regex = new RegExp(`${attributeName}=['"]([^'"]*?)['"]`, 'i');
+            const match = node.toString().match(regex);
+            result[attributeName] = match ? match[1] : defaultValue;
+        }
+
+        return result;
+    }
+}
+
 export function activate(context: vscode.ExtensionContext) {
     // initial decorations
     let activeEditor = vscode.window.activeTextEditor;
@@ -86,9 +106,9 @@ export function activate(context: vscode.ExtensionContext) {
             const xmlData = fs.readFileSync(report.fsPath, 'utf-8');
             const doc = new DOMParser().parseFromString(xmlData, 'text/xml');
             const sources = xpath.select(`coverage/sources/source/text()`, doc);
-            const drives: string[] = sources.map(drive => drive.toString().replace(/.*"(.*)".*/, '$1'));
+            const drives: string[] = sources.map(drive => drive.toString());
             const filenames = xpath.select(`coverage/packages/package/classes/class/@filename`, doc);
-            const files: string[] = filenames.map(filename => filename.toString().replace(/.*"(.*)".*/, '$1'));
+            const files: string[] = filenames.map(filename => xml.attribute(filename, "filename"));
             const allFiles = drives.flatMap(el1 => files.map(el2 => vscode.Uri.file([el1.toString(), el2.toString()].join('/'))));
             resolve(allFiles);
         });
@@ -106,16 +126,14 @@ export function activate(context: vscode.ExtensionContext) {
             const missesArray: number[] = [];
 
             linesNodes.forEach(node => {
-                const nodeAsString = node.toString();
-                // TODO how to get node attribute?
-                const match = nodeAsString.match(/<line number="(\d+)" hits="(\d+)"\/>/);
-                if (match) {
-                    const number = parseInt(match[1]) - 1;
-                    const hits = parseInt(match[2]);
-                    if (hits > 0) { hitsArray.push(number); }
-                    else {
-                        missesArray.push(number);
-                    }
+                const attributes = xml.attributes(node, ["number", "hits"]);
+                const number = parseInt(attributes['number']) - 1;
+                const hits = parseInt(attributes['hits']);
+                if (hits > 0) {
+                    hitsArray.push(number);
+                }
+                else {
+                    missesArray.push(number);
                 }
             });
 
