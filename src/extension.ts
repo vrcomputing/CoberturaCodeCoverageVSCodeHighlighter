@@ -229,7 +229,12 @@ export function activate(context: vscode.ExtensionContext) {
     }));
 
     context.subscriptions.push(vscode.commands.registerCommand('coberturahighlighter.showCoverage', function () {
-        showDecorations(activeEditor ? [activeEditor] : []);
+        if (!activeCoverage) {
+            selectReport().then(uri => initializeCoverage(uri)).then(_ => showDecorations(activeEditor ? [activeEditor] : []));
+        }
+        else {
+            showDecorations(activeEditor ? [activeEditor] : []);
+        }
     }));
 
     context.subscriptions.push(vscode.commands.registerCommand('coberturahighlighter.hideCoverage', function () {
