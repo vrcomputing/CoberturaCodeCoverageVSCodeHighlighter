@@ -1,18 +1,21 @@
 {
   "name": "coberturahighlighter",
-  "displayName": "coberturahighlighter",
-  "description": "",
+  "publisher": "vrcomputing",
+  "displayName": "Cobertura Code Coverage Highlighter",
+  "description": "Cobertura code coverage highlighter parsing OpenCppCoverage generated cobertura xml file and highlighting hit and missed lines in the C++ source files",
   "version": "0.0.1",
   "engines": {
     "vscode": "^1.91.0"
   },
   "categories": [
-    "Other"
+    "Programming Languages",
+    "Testing"
   ],
   "activationEvents": [
     "onLanguage:cpp"
   ],
   "main": "./out/extension.js",
+  "icon": "doc/icon.png",
   "contributes": {
     "configuration": {
       "type": "object",
@@ -55,6 +58,20 @@
         "command": "coberturahighlighter.hideCoverage",
         "title": "Hide Coverage"
       }
+    ],
+    "languages": [
+      {
+        "id": "cpp",
+        "aliases": [
+          "C++",
+          "cpp"
+        ],
+        "extensions": [
+          ".cpp",
+          ".hpp",
+          ".h"
+        ]
+      }
     ]
   },
   "scripts": {
@@ -76,6 +93,7 @@
     "@vscode/test-electron": "^2.3.2",
     "eslint": "^8.41.0",
     "glob": "^8.1.0",
+    "license-checker": "^25.0.1",
     "mocha": "^10.2.0",
     "typescript": "^5.1.3",
     "xmldom": "^0.6.0",
