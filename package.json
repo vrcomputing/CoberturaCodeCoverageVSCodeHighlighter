@@ -3,7 +3,7 @@
   "publisher": "vrcomputing",
   "displayName": "Cobertura Code Coverage Highlighter",
   "description": "Cobertura code coverage highlighter parsing OpenCppCoverage generated cobertura xml file and highlighting hit and missed lines in the C++ source files",
-  "version": "0.0.2",
+  "version": "0.0.3",
   "repository": {
     "url": "https://github.com/vrcomputing/CoberturaCodeCoverageVSCodeHighlighter.git"
   },
@@ -44,7 +44,9 @@
         "coberturahighlighter.minCoverage": {
           "type": "integer",
           "default": 80,
-          "description": "Minimum line coverage in percent"
+          "description": "Minimum line coverage in percent",
+          "minimum": 0,
+          "maximum": 100
         }
       }
     },
