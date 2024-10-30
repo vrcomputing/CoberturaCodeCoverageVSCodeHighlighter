@@ -48,15 +48,15 @@
     "commands": [
       {
         "command": "coberturahighlighter.selectReport",
-        "title": "Select a report for coverage analysis"
+        "title": "CCC: Select a report for coverage analysis"
       },
       {
         "command": "coberturahighlighter.showCoverage",
-        "title": "Show Coverage"
+        "title": "CCC: Show Coverage"
       },
       {
         "command": "coberturahighlighter.hideCoverage",
-        "title": "Hide Coverage"
+        "title": "CCC: Hide Coverage"
       }
     ],
     "languages": [
