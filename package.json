@@ -4,6 +4,9 @@
   "displayName": "Cobertura Code Coverage Highlighter",
   "description": "Cobertura code coverage highlighter parsing OpenCppCoverage generated cobertura xml file and highlighting hit and missed lines in the C++ source files",
   "version": "0.0.1",
+  "repository": {
+    "url": "https://github.com/vrcomputing/CoberturaCodeCoverageVSCodeHighlighter.git"
+  },
   "engines": {
     "vscode": "^1.91.0"
   },
@@ -15,7 +18,7 @@
     "onLanguage:cpp"
   ],
   "main": "./out/extension.js",
-  "icon": "doc/icon.png",
+  "icon": "./doc/icon.png",
   "contributes": {
     "configuration": {
       "type": "object",
