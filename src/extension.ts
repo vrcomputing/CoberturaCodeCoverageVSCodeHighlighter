@@ -1,144 +1,4 @@
 import * as vscode from 'vscode';
-import * as fs from 'fs';
-import * as xpath from 'xpath';
-import { DOMParser } from 'xmldom';
-import * as packageJson from '../package.json';
-import { assert } from 'console';
-
-namespace xml {
-    export function attribute(node: xpath.SelectedValue | string, attributeName: string, defaultValue: string = ""): string {
-        const regex = new RegExp(`${attributeName}="([^"]*?)"`, 'i');
-        const match = node.toString().match(regex);
-        return match ? match[1] : defaultValue;
-    }
-
-    export function attributes(node: xpath.SelectedValue | string, attributeNames: string[], defaultValue: string = ""): Record<string, string> {
-        const result: Record<string, string> = {};
-
-        for (const attributeName of attributeNames) {
-            const regex = new RegExp(`${attributeName}=['"]([^'"]*?)['"]`, 'i');
-            const match = node.toString().match(regex);
-            result[attributeName] = match ? match[1] : defaultValue;
-        }
-
-        return result;
-    }
-}
-
-namespace cobertura {
-    class Line {
-        public number: number;
-        public hits: number;
-        constructor(number: number, hits: number) {
-            this.number = number;
-            this.hits = hits;
-        }
-    }
-
-    class Class {
-        public name: string;
-        public filename: string;
-        public lines: Line[];
-
-        constructor(name: string, filename: string, lines: Line[]) {
-            this.name = name;
-            this.filename = filename;
-            this.lines = lines;
-        }
-
-        public getHits(): number[] {
-            return this.lines
-                .filter(line => line.hits > 0)
-                .map(line => line.number);
-        }
-
-        public getMisses(): number[] {
-            return this.lines
-                .filter(line => line.hits <= 0)
-                .map(line => line.number);
-        }
-    }
-
-    class Source {
-        public text: string;
-        constructor(text: string) {
-            this.text = text;
-        }
-    }
-
-    class Package {
-        public name: string;
-        public classes: Class[];
-        constructor(name: string, classes: Class[]) {
-            this.name = name;
-            this.classes = classes;
-        }
-    }
-
-    export class Coverage {
-        public sources: Source[];
-        public packages: Package[];
-
-        constructor(sources: Source[], packages: Package[]) {
-            this.sources = sources;
-            this.packages = packages;
-        }
-    }
-
-    export function observableFilesInCoverage(coverage: Coverage): vscode.Uri[] {
-        const drives = coverage.sources.map(source => source.text);
-        const filenames = coverage.packages.map(pack => pack.classes).flat().map(cls => cls.filename);
-        const files = drives.flatMap(drive => filenames.map(filename => vscode.Uri.file([drive.toString(), filename.toString()].join('/'))));
-        return files;
-    }
-
-    function linesInClass(doc: Document, packageName: string, classFilename: string): Line[] {
-        const nodes = xpath.select(`coverage/packages/package[@name = '${packageName}']/classes/class[@filename = '${classFilename}']/lines/line`, doc);
-        const lines = nodes.map(node => {
-            const attributes = xml.attributes(node, ['number', 'hits']);
-            return new Line(parseInt(attributes['number']), parseInt(attributes['hits']));
-        });
-        return lines;
-    }
-
-    function classesInPackage(doc: Document, packageName: string): Class[] {
-        const nodes = xpath.select(`coverage/packages/package[@name = '${packageName}']/classes/class`, doc);
-        const classes = nodes.map(node => {
-            const attributes = xml.attributes(node, ['name', 'filename']);
-            const lines = linesInClass(doc, packageName, attributes['filename']);
-            return new Class(attributes['name'], attributes['filename'], lines);
-        });
-        return classes;
-    }
-
-    function packagesInDocument(doc: Document): Package[] {
-        const nodes = xpath.select(`coverage/packages/package`, doc);
-        const packages = nodes.map(node => {
-            const name = xml.attribute(node, 'name');
-            const classes = classesInPackage(doc, name);
-            return new Package(name, classes);
-        });
-        return packages;
-    }
-
-    function sourcesInDocument(doc: Document): Source[] {
-        const nodes = xpath.select(`coverage/sources/source/text()`, doc);
-        const sources = nodes.map(node => new Source(node.toString()));
-        return sources;
-    }
-
-    function coverageFromDocument(doc: Document): Coverage {
-        const sources = sourcesInDocument(doc);
-        const packages = packagesInDocument(doc);
-        return new Coverage(sources, packages);
-    }
-
-    export function coverageFromFile(uri: vscode.Uri): Coverage {
-        const xmlData = fs.readFileSync(uri.fsPath, 'utf-8');
-        const doc = new DOMParser().parseFromString(xmlData, 'text/xml');
-        return coverageFromDocument(doc);
-    }
-}
 
 namespace filesystem {
     export function createFileSystemWatcher(globPattern: vscode.GlobPattern, onDidChange?: (uri: vscode.Uri) => any, onDidCreate?: (uri: vscode.Uri) => any, onDidDelete?: (uri: vscode.Uri) => any): vscode.FileSystemWatcher {
@@ -164,20 +24,20 @@ export function activate(context: vscode.ExtensionContext) {
     }
 
     // report->filenames
-    let activeCoverage: [vscode.Uri, cobertura.Coverage] | undefined;
+    let activeCoverage = new Map<string, [number, number][]>();
 
     // settings
     let decorationTypeH = vscode.window.createTextEditorDecorationType({
-        backgroundColor: vscode.workspace.getConfiguration(packageJson.name).get<string>('hitColor')
+        backgroundColor: vscode.workspace.getConfiguration("coberturahighlighter").get<string>('hitColor')
     });
 
     let decorationTypeM = vscode.window.createTextEditorDecorationType({
-        backgroundColor: vscode.workspace.getConfiguration(packageJson.name).get<string>('missColor')
+        backgroundColor: vscode.workspace.getConfiguration("coberturahighlighter").get<string>('missColor')
     });
 
-    const reportPattern = vscode.workspace.getConfiguration(packageJson.name).get<string>('reportPattern');
+    const reportPattern = vscode.workspace.getConfiguration("coberturahighlighter").get<string>('reportPattern');
     context.subscriptions.push(filesystem.createFileSystemWatcher(`**/${reportPattern}`, uri => {
-        if (activeCoverage && uri.fsPath === activeCoverage[0].fsPath) {
+        if (uri.fsPath in activeCoverage.keys()) {
             hideDecorations(vscode.window.visibleTextEditors);
             initializeCoverage(uri);
             showDecorations(vscode.window.visibleTextEditors);
@@ -197,12 +57,11 @@ export function activate(context: vscode.ExtensionContext) {
     }
 
     function minimumCoverage(): number {
-        const minCoverage = vscode.workspace.getConfiguration(packageJson.name).get<string>('minCoverage');
+        const minCoverage = vscode.workspace.getConfiguration("coberturahighlighter").get<string>('minCoverage');
         return minCoverage ? parseFloat(minCoverage) : 80.0;
     }
 
     function coverageForDisplay(coverage: number): string {
-        assert(coverage >= 0 && coverage <= 100);
         return `${coverage.toFixed(2)}`;
     }
 
@@ -218,19 +77,68 @@ export function activate(context: vscode.ExtensionContext) {
         });
     }
 
-    function initializeCoverage(uri: vscode.Uri) {
-        const coverage = cobertura.coverageFromFile(uri);
-        activeCoverage = [uri, coverage];
+    function initializeCoverage(uri: vscode.Uri): Promise<Map<string, [number, number][]>> {
+        return new Promise((resolve) => {
+            vscode.workspace.openTextDocument(uri).then(doc => {
+                const drives: string[] = [];
+                const files = new Map<string, [number, number][]>();
+                let currentFile: string = "";
+
+                for (let i = 0; i < doc.lineCount; i++) {
+                    const lineText = doc.lineAt(i).text;
+                    let match: RegExpMatchArray | null;
+
+                    // Match for <source> tags
+                    match = lineText.match(/<source>(\w[:])<\/source>/);
+                    if (match) {
+                        drives.push(match[1].toLowerCase());
+                    }
+
+                    // Match for <class> tags
+                    match = lineText.match(/\s*<class name="([^"]+)" filename="([^"]+)" line-rate="(\d[.]\d+)"/);
+                    if (match) {
+                        currentFile = match[2];
+                        files.set(currentFile, []);
+                    }
+
+                    // Match for <line> tags
+                    match = lineText.match(/\s*<line number="(\d+)" hits="(\d+)"\/>/);
+                    if (match && currentFile) {
+                        files.get(currentFile)?.push([parseInt(match[1]), parseInt(match[2])]);
+                    }
+                }
+
+                const report = new Map<string, [number, number][]>();
+                for (const drive of drives) {
+                    for (const [file, stats] of files) {
+                        const filename = `${drive}\\${file}`;
+                        report.set(vscode.Uri.file(filename).fsPath, stats ? stats : []);
+                    }
+                }
+
+                resolve(report);
+            });
+        });
     }
 
     // commands
     context.subscriptions.push(vscode.commands.registerCommand('coberturahighlighter.selectReport', function () {
-        selectReport().then(uri => initializeCoverage(uri)).then(_ => showDecorations(activeEditor ? [activeEditor] : []));
+        selectReport().then(uri => {
+            initializeCoverage(uri).then(report => {
+                activeCoverage = report;
+                showDecorations(activeEditor ? [activeEditor] : []);
+            });
+        });
     }));
 
     context.subscriptions.push(vscode.commands.registerCommand('coberturahighlighter.showCoverage', function () {
-        if (!activeCoverage) {
-            selectReport().then(uri => initializeCoverage(uri)).then(_ => showDecorations(activeEditor ? [activeEditor] : []));
+        if (activeCoverage.size === 0) {
+            selectReport().then(uri => {
+                initializeCoverage(uri).then(report => {
+                    activeCoverage = report;
+                    showDecorations(activeEditor ? [activeEditor] : []);
+                });
+            });
         }
         else {
             showDecorations(activeEditor ? [activeEditor] : []);
@@ -243,15 +151,9 @@ export function activate(context: vscode.ExtensionContext) {
 
     vscode.window.onDidChangeActiveTextEditor(editor => {
         activeEditor = editor;
-        if (editor && activeCoverage) {
-            const observable = cobertura.observableFilesInCoverage(activeCoverage[1]).map(uri => uri.fsPath);
-            const fsPath = editor.document.uri.fsPath;
-            if (observable.includes(fsPath)) {
-                showDecorations([editor]);
-            }
-            else {
-                hideDecorations([editor]);
-            }
+
+        if (activeEditor && activeCoverage.has(activeEditor.document.uri.fsPath)) {
+            showDecorations([activeEditor]);
         }
     }, null, context.subscriptions);
 
@@ -374,18 +276,21 @@ export function activate(context: vscode.ExtensionContext) {
 
     function showDecorations(editors: readonly vscode.TextEditor[] = vscode.window.visibleTextEditors) {
         editors.forEach(editor => {
-            if (!activeCoverage) {
-                return;
-            }
-            const filename = editor.document.uri.fsPath;
-            const classes = activeCoverage[1].packages.map(pkg => pkg.classes).flat().filter(cls => filename.endsWith(cls.filename));
-            const hits = classes.map(cls => cls.getHits()).flat();
-            const misses = classes.map(cls => cls.getMisses()).flat();
-
-            showLineHighlights(editor, [hits, misses]);
-            showDiagnostics(editor.document, [hits, misses]);
-            if (editor === activeEditor) {
-                showStatusBar([hits, misses]);
+            for (const [filename, _] of activeCoverage) {
+                if (filename === editor.document.uri.fsPath) {
+                    const stats = activeCoverage.get(filename);
+                    if (stats) {
+                        const hits: number[] = [];
+                        stats.filter(([_, hits]) => { return hits > 0; }).map(([number, _]) => hits.push(number));
+                        const misses: number[] = [];
+                        stats.filter(([_, hits]) => { return hits <= 0; }).map(([number, _]) => misses.push(number));
+                        showLineHighlights(editor, [hits, misses]);
+                        showDiagnostics(editor.document, [hits, misses]);
+                        if (editor === activeEditor) {
+                            showStatusBar([hits, misses]);
+                        }
+                    }
+                }
             }
         });
     }
