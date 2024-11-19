@@ -1,5 +1,47 @@
 import * as vscode from 'vscode';
 
+namespace treeview {
+    export class MyTreeItem extends vscode.TreeItem {
+        constructor(label: string, description: string, uri: vscode.Uri) {
+            super(label, vscode.TreeItemCollapsibleState.None);
+            this.description = description;
+            this.command = {
+                command: 'vscode.open',
+                title: 'Open File',
+                arguments: [uri]
+            };
+            this.resourceUri = uri;
+        }
+    }
+
+    export class MyTreeDataProvider implements vscode.TreeDataProvider<MyTreeItem> {
+
+        private _onDidChangeTreeData: vscode.EventEmitter<MyTreeItem | undefined | void> = new vscode.EventEmitter<MyTreeItem | undefined | void>();
+        readonly onDidChangeTreeData: vscode.Event<MyTreeItem | undefined | void> = this._onDidChangeTreeData.event;
+        private provider: () => MyTreeItem[];
+
+        constructor(items: () => MyTreeItem[]) {
+            this.provider = items;
+        }
+
+        getTreeItem(element: MyTreeItem): vscode.TreeItem {
+            return element;
+        }
+
+        getChildren(element?: MyTreeItem): Thenable<MyTreeItem[]> {
+            if (element) {
+                return Promise.resolve([]);
+            } else {
+                return Promise.resolve(this.provider());
+            }
+        }
+
+        public refresh(): void {
+            this._onDidChangeTreeData.fire();
+        }
+    }
+}
+
 namespace filesystem {
     export function createFileSystemWatcher(globPattern: vscode.GlobPattern, onDidChange?: (uri: vscode.Uri) => any, onDidCreate?: (uri: vscode.Uri) => any, onDidDelete?: (uri: vscode.Uri) => any): vscode.FileSystemWatcher {
         const watcher = vscode.workspace.createFileSystemWatcher(globPattern);
@@ -51,6 +93,23 @@ export function activate(context: vscode.ExtensionContext) {
     statusBar.text = '';
     context.subscriptions.push(statusBar);
 
+    const treeDataProvider = new treeview.MyTreeDataProvider(() => {
+        const items: treeview.MyTreeItem[] = [];
+        for (let key of activeCoverage.keys()) {
+            const stats = activeCoverage.get(key);
+            if (stats) {
+                const hits = stats.filter(([_, hits]) => { return hits > 0; }).map(([number, _]) => number);
+                const misses = stats.filter(([_, hits]) => { return hits <= 0; }).map(([number, _]) => number);
+                const coverage = coverageInPercent([hits, misses]);
+                const uri = vscode.Uri.file(key);
+                const label = key; //key.split("\\").pop();
+                items.push(new treeview.MyTreeItem(label ? label : key, `${coverageForDisplay(coverage)}%`, uri));
+            }
+        }
+        return items;
+    });
+    vscode.window.createTreeView('cccTreeView', { treeDataProvider });
+
     function coverageInPercent([hits, misses]: [number[], number[]]): number {
         const coveragePercentage = (hits.length / (hits.length + misses.length)) * 100;
         return coveragePercentage;
@@ -75,6 +134,11 @@ export function activate(context: vscode.ExtensionContext) {
                 });
             });
         });
+    }
+
+    function removeFileFromReport(filename: string) {
+        activeCoverage.delete(filename);
+        treeDataProvider.refresh();
     }
 
     function initializeCoverage(uri: vscode.Uri): Promise<Map<string, [number, number][]>> {
@@ -112,8 +176,15 @@ export function activate(context: vscode.ExtensionContext) {
                 for (const drive of drives) {
                     for (const [file, stats] of files) {
                         const filename = `${drive}\\${file}`;
-                        report.set(vscode.Uri.file(filename).fsPath, stats ? stats : []);
+                        const key = vscode.Uri.file(filename).fsPath;
+                        report.set(key, stats ? stats : []);
                     }
+                }
+
+                for (const key of report.keys()) {
+                    vscode.workspace.openTextDocument(key).then(doc => { }, reason => {
+                        removeFileFromReport(key);
+                    });
                 }
 
                 resolve(report);
@@ -293,6 +364,7 @@ export function activate(context: vscode.ExtensionContext) {
                 }
             }
         });
+        treeDataProvider.refresh();
     }
 
     function hideDecorations(editors: readonly vscode.TextEditor[] = vscode.window.visibleTextEditors) {
