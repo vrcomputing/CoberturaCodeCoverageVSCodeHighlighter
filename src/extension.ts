@@ -1,4 +1,6 @@
 import * as vscode from 'vscode';
+import * as fs from 'fs';
+import * as path from 'path';
 
 namespace treeview {
     export class MyTreeItem extends vscode.TreeItem {
@@ -102,8 +104,14 @@ export function activate(context: vscode.ExtensionContext) {
                 const misses = stats.filter(([_, hits]) => { return hits <= 0; }).map(([number, _]) => number);
                 const coverage = coverageInPercent([hits, misses]);
                 const uri = vscode.Uri.file(key);
-                const label = key; //key.split("\\").pop();
-                items.push(new treeview.MyTreeItem(label ? label : key, `${coverageForDisplay(coverage)}%`, uri));
+                const workspaces = vscode.workspace.workspaceFolders;
+                let relative = key;
+                if (workspaces) {
+                    relative = path.relative(workspaces[0].uri.fsPath, key);
+                }
+
+                const percent = coverageForDisplay(coverage);
+                items.push(new treeview.MyTreeItem(relative, `${percent}/${minimumCoverage()}%`, uri));
             }
         }
         return items;
@@ -134,11 +142,6 @@ export function activate(context: vscode.ExtensionContext) {
                 });
             });
         });
-    }
-
-    function removeFileFromReport(filename: string) {
-        activeCoverage.delete(filename);
-        treeDataProvider.refresh();
     }
 
     function initializeCoverage(uri: vscode.Uri): Promise<Map<string, [number, number][]>> {
@@ -177,14 +180,10 @@ export function activate(context: vscode.ExtensionContext) {
                     for (const [file, stats] of files) {
                         const filename = `${drive}\\${file}`;
                         const key = vscode.Uri.file(filename).fsPath;
-                        report.set(key, stats ? stats : []);
+                        if (fs.existsSync(key)) {
+                            report.set(key, stats ? stats : []);
+                        }
                     }
-                }
-
-                for (const key of report.keys()) {
-                    vscode.workspace.openTextDocument(key).then(doc => { }, reason => {
-                        removeFileFromReport(key);
-                    });
                 }
 
                 resolve(report);
