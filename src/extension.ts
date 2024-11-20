@@ -70,6 +70,16 @@ class FileStats {
     }
 }
 
+class Model {
+    public uri: vscode.Uri;
+    public files: Map<string, FileStats>;
+
+    constructor(uri: vscode.Uri = vscode.Uri.file(""), files: Map<string, FileStats> = new Map<string, FileStats>()) {
+        this.uri = uri;
+        this.files = files;
+    }
+}
+
 export function activate(context: vscode.ExtensionContext) {
     // initial decorations
     let activeEditor = vscode.window.activeTextEditor;
@@ -78,7 +88,8 @@ export function activate(context: vscode.ExtensionContext) {
     }
 
     // report->filenames
-    let activeCoverage = new Map<string, FileStats>();
+    let activeCoverage = new Model();
+    let lineHighlights: boolean = true;
 
     // settings
     let decorationTypeH = vscode.window.createTextEditorDecorationType({
@@ -91,10 +102,14 @@ export function activate(context: vscode.ExtensionContext) {
 
     const reportPattern = vscode.workspace.getConfiguration("coberturahighlighter").get<string>('reportPattern');
     context.subscriptions.push(filesystem.createFileSystemWatcher(`**/${reportPattern}`, uri => {
-        if (uri.fsPath in activeCoverage.keys()) {
-            hideDecorations(vscode.window.visibleTextEditors);
-            initializeCoverage(uri);
-            showDecorations(vscode.window.visibleTextEditors);
+        if (uri.fsPath === activeCoverage.uri.fsPath) {
+            const restore = lineHighlights;
+            hideDecorations();
+            initializeCoverage(uri).then(_ => {
+                if (restore) {
+                    showDecorations();
+                }
+            });
         }
     }));
 
@@ -103,12 +118,12 @@ export function activate(context: vscode.ExtensionContext) {
 
     const statusBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
     statusBar.text = '';
+    statusBar.command = "coberturahighlighter.toggleCoverage";
     context.subscriptions.push(statusBar);
 
     const treeDataProvider = new treeview.MyTreeDataProvider(() => {
         const items: treeview.MyTreeItem[] = [];
-        for (let key of activeCoverage.keys()) {
-            const stats = activeCoverage.get(key);
+        for (let [key, stats] of activeCoverage.files) {
             if (stats) {
                 const coverage = coverageInPercent([stats.hits, stats.misses]);
                 const uri = vscode.Uri.file(key);
@@ -152,12 +167,13 @@ export function activate(context: vscode.ExtensionContext) {
         });
     }
 
-    function initializeCoverage(uri: vscode.Uri): Promise<Map<string, FileStats>> {
+    function initializeCoverage(uri: vscode.Uri): Promise<Model> {
         return new Promise((resolve) => {
             vscode.workspace.openTextDocument(uri).then(doc => {
                 const drives: string[] = [];
                 const report = new Map<string, FileStats>();
                 let currentFile: string = "";
+                let currentLineRate: number = 0.0;
 
                 for (let i = 0; i < doc.lineCount; i++) {
                     const lineText = doc.lineAt(i).text;
@@ -170,9 +186,10 @@ export function activate(context: vscode.ExtensionContext) {
                     }
 
                     // Match for <class> tags
-                    match = lineText.match(/\s*<class name="([^"]+)" filename="([^"]+)" line-rate="(\d[.]\d+)"/);
+                    match = lineText.match(/\s*<class name="([^"]+)" filename="([^"]+)" line-rate="([^"]+)" branch-rate="([^"]+)" complexity="([^"]+)">/);
                     if (match) {
                         currentFile = match[2];
+                        currentLineRate = parseFloat(match[3]);
                         report.set(currentFile, new FileStats());
                     }
 
@@ -204,7 +221,8 @@ export function activate(context: vscode.ExtensionContext) {
                     }
                 }
 
-                resolve(temp);
+                activeCoverage = new Model(uri, temp);
+                resolve(activeCoverage);
             });
         });
     }
@@ -212,41 +230,49 @@ export function activate(context: vscode.ExtensionContext) {
     // commands
     context.subscriptions.push(vscode.commands.registerCommand('coberturahighlighter.selectReport', function () {
         selectReport().then(uri => {
-            initializeCoverage(uri).then(report => {
-                activeCoverage = report;
-                showDecorations(activeEditor ? [activeEditor] : []);
+            initializeCoverage(uri).then(_ => {
+                showDecorations();
             });
         });
     }));
 
     context.subscriptions.push(vscode.commands.registerCommand('coberturahighlighter.showCoverage', function () {
-        if (activeCoverage.size === 0) {
+        if (activeCoverage.files.size === 0) {
             selectReport().then(uri => {
-                initializeCoverage(uri).then(report => {
-                    activeCoverage = report;
-                    showDecorations(activeEditor ? [activeEditor] : []);
+                initializeCoverage(uri).then(_ => {
+                    showDecorations();
                 });
             });
         }
         else {
-            showDecorations(activeEditor ? [activeEditor] : []);
+            showDecorations();
         }
     }));
 
     context.subscriptions.push(vscode.commands.registerCommand('coberturahighlighter.hideCoverage', function () {
-        hideDecorations(activeEditor ? [activeEditor] : []);
+        hideDecorations();
+    }));
+
+    context.subscriptions.push(vscode.commands.registerCommand('coberturahighlighter.toggleCoverage', function () {
+        if(lineHighlights) {
+            hideDecorations();
+        }
+        else {
+            showDecorations();
+        }
     }));
 
     vscode.window.onDidChangeActiveTextEditor(editor => {
         activeEditor = editor;
-
-        if (activeEditor && activeCoverage.has(activeEditor.document.uri.fsPath)) {
-            showDecorations([activeEditor]);
+        if (activeEditor && activeCoverage.files.has(activeEditor.document.uri.fsPath)) {
+            if (lineHighlights) {
+                showDecorations();
+            }
         }
     }, null, context.subscriptions);
 
     vscode.workspace.onDidChangeTextDocument(event => {
-        if (activeEditor && event.document === activeEditor.document) {
+        if (activeEditor && event.document === activeEditor.document && event.document.uri.fsPath in activeCoverage.files.keys()) {
             hideDecorations(activeEditor ? [activeEditor] : []);
         }
     }, null, context.subscriptions);
@@ -287,7 +313,7 @@ export function activate(context: vscode.ExtensionContext) {
 
     function updateStatusBar([hits, misses]: [number[], number[]]) {
         if (!hits || !hits.length || !misses || !misses.length) {
-            statusBar.hide();
+            // statusBar.hide();
         }
         else {
             const coveragePercentageMin = minimumCoverage();
@@ -362,30 +388,41 @@ export function activate(context: vscode.ExtensionContext) {
         updateLineHighlights(editor, [[], []]);
     }
 
-    function showDecorations(editors: readonly vscode.TextEditor[] = vscode.window.visibleTextEditors) {
-        editors.forEach(editor => {
-            for (const [filename, _] of activeCoverage) {
-                if (filename === editor.document.uri.fsPath) {
-                    const stats = activeCoverage.get(filename);
-                    if (stats) {
-                        showLineHighlights(editor, [stats.hits, stats.misses]);
-                        showDiagnostics(editor.document, [stats.hits, stats.misses]);
-                        if (editor === activeEditor) {
-                            showStatusBar([stats.hits, stats.misses]);
+    function updateDecorations(editors: readonly vscode.TextEditor[] = vscode.window.visibleTextEditors) {
+        if (lineHighlights) {
+            editors.forEach(editor => {
+                for (const [filename, stats] of activeCoverage.files) {
+                    if (filename === editor.document.uri.fsPath) {
+                        if (stats) {
+                            showLineHighlights(editor, [stats.hits, stats.misses]);
+                            showDiagnostics(editor.document, [stats.hits, stats.misses]);
+                            if (editor === activeEditor) {
+                                showStatusBar([stats.hits, stats.misses]);
+                            }
                         }
                     }
                 }
-            }
-        });
+            });
+        }
+        else {
+            editors.forEach(editor => {
+                hideLineHighlights(editor);
+                hideDiagnostics(editor.document);
+                hideStatusBar();
+            });
+        }
+        treeDataProvider.refresh();
+    }
+
+    function showDecorations(editors: readonly vscode.TextEditor[] = vscode.window.visibleTextEditors) {
+        lineHighlights = true;
+        updateDecorations(editors);
         treeDataProvider.refresh();
     }
 
     function hideDecorations(editors: readonly vscode.TextEditor[] = vscode.window.visibleTextEditors) {
-        editors.forEach(editor => {
-            hideLineHighlights(editor);
-            hideDiagnostics(editor.document);
-            hideStatusBar();
-        });
+        lineHighlights = false;
+        updateDecorations(editors);
     }
 }
 

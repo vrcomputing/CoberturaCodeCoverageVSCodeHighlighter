@@ -62,6 +62,10 @@
       {
         "command": "coberturahighlighter.hideCoverage",
         "title": "CCC: Hide Coverage"
+      },
+      {
+        "command": "coberturahighlighter.toggleCoverage",
+        "title": "CCC: Toggle Coverage"
       }
     ],
     "languages": [
