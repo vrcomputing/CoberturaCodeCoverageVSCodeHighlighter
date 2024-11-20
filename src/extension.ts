@@ -60,6 +60,16 @@ namespace filesystem {
     }
 }
 
+class FileStats {
+    public hits: number[];
+    public misses: number[];
+
+    constructor(hits: number[] = [], missed: number[] = []) {
+        this.hits = hits;
+        this.misses = missed;
+    }
+}
+
 export function activate(context: vscode.ExtensionContext) {
     // initial decorations
     let activeEditor = vscode.window.activeTextEditor;
@@ -68,7 +78,7 @@ export function activate(context: vscode.ExtensionContext) {
     }
 
     // report->filenames
-    let activeCoverage = new Map<string, [number, number][]>();
+    let activeCoverage = new Map<string, FileStats>();
 
     // settings
     let decorationTypeH = vscode.window.createTextEditorDecorationType({
@@ -100,9 +110,7 @@ export function activate(context: vscode.ExtensionContext) {
         for (let key of activeCoverage.keys()) {
             const stats = activeCoverage.get(key);
             if (stats) {
-                const hits = stats.filter(([_, hits]) => { return hits > 0; }).map(([number, _]) => number);
-                const misses = stats.filter(([_, hits]) => { return hits <= 0; }).map(([number, _]) => number);
-                const coverage = coverageInPercent([hits, misses]);
+                const coverage = coverageInPercent([stats.hits, stats.misses]);
                 const uri = vscode.Uri.file(key);
                 const workspaces = vscode.workspace.workspaceFolders;
                 let relative = key;
@@ -144,11 +152,11 @@ export function activate(context: vscode.ExtensionContext) {
         });
     }
 
-    function initializeCoverage(uri: vscode.Uri): Promise<Map<string, [number, number][]>> {
+    function initializeCoverage(uri: vscode.Uri): Promise<Map<string, FileStats>> {
         return new Promise((resolve) => {
             vscode.workspace.openTextDocument(uri).then(doc => {
                 const drives: string[] = [];
-                const files = new Map<string, [number, number][]>();
+                const report = new Map<string, FileStats>();
                 let currentFile: string = "";
 
                 for (let i = 0; i < doc.lineCount; i++) {
@@ -165,28 +173,38 @@ export function activate(context: vscode.ExtensionContext) {
                     match = lineText.match(/\s*<class name="([^"]+)" filename="([^"]+)" line-rate="(\d[.]\d+)"/);
                     if (match) {
                         currentFile = match[2];
-                        files.set(currentFile, []);
+                        report.set(currentFile, new FileStats());
                     }
 
                     // Match for <line> tags
                     match = lineText.match(/\s*<line number="(\d+)" hits="(\d+)"\/>/);
                     if (match && currentFile) {
-                        files.get(currentFile)?.push([parseInt(match[1]), parseInt(match[2])]);
-                    }
-                }
-
-                const report = new Map<string, [number, number][]>();
-                for (const drive of drives) {
-                    for (const [file, stats] of files) {
-                        const filename = `${drive}\\${file}`;
-                        const key = vscode.Uri.file(filename).fsPath;
-                        if (fs.existsSync(key)) {
-                            report.set(key, stats ? stats : []);
+                        const stats = report.get(currentFile);
+                        if (stats) {
+                            const line = parseInt(match[1]);
+                            const count = parseInt(match[2]);
+                            if (count > 0) {
+                                stats.hits.push(line);
+                            }
+                            else {
+                                stats.misses.push(line);
+                            }
                         }
                     }
                 }
 
-                resolve(report);
+                const temp = new Map<string, FileStats>();
+                for (const [file, stats] of report) {
+                    for (const drive of drives) {
+                        const filename = `${drive}\\${file}`;
+                        const key = vscode.Uri.file(filename).fsPath;
+                        if (fs.existsSync(key)) {
+                            temp.set(key, new FileStats(stats.hits, stats.misses));
+                        }
+                    }
+                }
+
+                resolve(temp);
             });
         });
     }
@@ -350,14 +368,10 @@ export function activate(context: vscode.ExtensionContext) {
                 if (filename === editor.document.uri.fsPath) {
                     const stats = activeCoverage.get(filename);
                     if (stats) {
-                        const hits: number[] = [];
-                        stats.filter(([_, hits]) => { return hits > 0; }).map(([number, _]) => hits.push(number));
-                        const misses: number[] = [];
-                        stats.filter(([_, hits]) => { return hits <= 0; }).map(([number, _]) => misses.push(number));
-                        showLineHighlights(editor, [hits, misses]);
-                        showDiagnostics(editor.document, [hits, misses]);
+                        showLineHighlights(editor, [stats.hits, stats.misses]);
+                        showDiagnostics(editor.document, [stats.hits, stats.misses]);
                         if (editor === activeEditor) {
-                            showStatusBar([hits, misses]);
+                            showStatusBar([stats.hits, stats.misses]);
                         }
                     }
                 }
